@@ -230,11 +230,6 @@ else
       pkg.scripts.prepare = "husky";
     }
     
-    // Set packageManager if not present
-    if (!pkg.packageManager) {
-      pkg.packageManager = "pnpm@latest";
-    }
-    
     fs.writeFileSync(file, JSON.stringify(pkg, null, 2) + "\n");
   ' && note "Updated package.json with prepare script"
   
