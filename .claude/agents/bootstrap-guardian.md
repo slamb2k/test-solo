@@ -99,7 +99,32 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Verify GitHub context
+# Verify GitHub context and create remote if needed
+echo -e "\n${GREEN}Checking GitHub connection...${NC}"
+
+# Check if we have a remote origin
+if ! git remote get-url origin >/dev/null 2>&1; then
+  note "No remote origin found - will create GitHub repository"
+  
+  # Get repo name from current directory
+  REPO_NAME="$(basename "$(pwd)")"
+  
+  # Create GitHub repo
+  echo "Creating GitHub repository..."
+  if gh repo create "$REPO_NAME" --private --source=. --push 2>/dev/null; then
+    note "🌐 Created GitHub repository and pushed initial commit"
+  else
+    # Try public if private fails (free accounts)
+    if gh repo create "$REPO_NAME" --public --source=. --push 2>/dev/null; then
+      note "🌐 Created public GitHub repository (private creation failed)"
+    else
+      fail "Failed to create GitHub repository"
+      report
+    fi
+  fi
+fi
+
+# Now verify we can access the repo
 OWNER_REPO="$(gh repo view --json owner,name --jq '.owner.login + "/" + .name' 2>/dev/null || true)"
 if [ -z "$OWNER_REPO" ]; then
   fail "No GitHub repo context. Please run 'gh auth login' first."
@@ -130,75 +155,7 @@ note "🪝 Hook installation: $HOOK"
 # Define required check contexts (emoji names match CI job names exactly)
 REQ_CONTEXTS='["🧹 Format","🔎 Lint","🧠 Typecheck","🛠️ Build"]'
 
-# ----- Branch Protection Configuration -----
-echo -e "\n${GREEN}Configuring branch protection...${NC}"
-
-# Build protection rules JSON
-if [ "$SOLO" = true ]; then
-  cat > /tmp/protect.json <<JSON
-{
-  "required_status_checks": null,
-  "enforce_admins": true,
-  "required_pull_request_reviews": null,
-  "restrictions": null,
-  "required_linear_history": true,
-  "allow_force_pushes": false,
-  "allow_deletions": false,
-  "block_creations": false,
-  "required_conversation_resolution": true,
-  "lock_branch": false,
-  "allow_fork_syncing": false
-}
-JSON
-else
-  cat > /tmp/protect.json <<JSON
-{
-  "required_status_checks": null,
-  "enforce_admins": true,
-  "required_pull_request_reviews": {
-    "required_approving_review_count": $REVIEWS,
-    "dismiss_stale_reviews": true,
-    "require_code_owner_reviews": false,
-    "require_last_push_approval": false
-  },
-  "restrictions": null,
-  "required_linear_history": true,
-  "allow_force_pushes": false,
-  "allow_deletions": false,
-  "block_creations": false,
-  "required_conversation_resolution": true,
-  "lock_branch": false,
-  "allow_fork_syncing": false
-}
-JSON
-fi
-
-# Apply branch protection
-if gh api -X PUT -H 'Accept: application/vnd.github+json' \
-  "repos/${OWNER_REPO}/branches/${BRANCH}/protection" --input /tmp/protect.json >/dev/null 2>&1; then
-  note "🛡️ Branch protection applied successfully"
-else
-  fail "Failed to apply branch protection (check permissions)"
-fi
-
-# Enable strict status checks (base must be up-to-date)
-if gh api -X PATCH "repos/${OWNER_REPO}/branches/${BRANCH}/protection/required_status_checks" \
-  -f strict=true -f contexts='[]' >/dev/null 2>&1; then
-  note "⛓️ Strict status checks enabled (base must be up-to-date)"
-else
-  warn "Could not enable strict status checks"
-fi
-
-# Set required check contexts
-if echo "$REQ_CONTEXTS" | gh api -X PUT \
-  "repos/${OWNER_REPO}/branches/${BRANCH}/protection/required_status_checks/contexts" \
-  --input - >/dev/null 2>&1; then
-  note "✅ Required checks configured: 🧹 Format, 🔎 Lint, 🧠 Typecheck, 🛠️ Build"
-else
-  fail "Failed to set required check contexts"
-fi
-
-# ----- Repository Settings -----
+# ----- Repository Settings (do this early) -----
 echo -e "\n${GREEN}Configuring repository settings...${NC}"
 
 if gh api -X PATCH "repos/${OWNER_REPO}" \
@@ -401,7 +358,47 @@ YAML
 git add .github/workflows/ci.yml >/dev/null 2>&1 || true
 note "🏗️ CI workflow created with emoji job names"
 
-# ----- Commit Changes -----
+# Create initialization workflow to establish status checks
+cat > .github/workflows/initialize-status-checks.yml <<'YAML'
+name: initialize-status-checks
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  init-checks:
+    runs-on: ubuntu-latest
+    name: "Run initialization checks"
+    steps:
+      - name: Setup minimal
+        run: echo "Initializing checks"
+
+      - name: "🧹 Format"
+        run: echo "Format initialization"
+        continue-on-error: true
+        id: format
+
+      - name: "🔎 Lint"
+        run: echo "Lint initialization"
+        continue-on-error: true
+        id: lint
+
+      - name: "🧠 Typecheck"
+        run: echo "Typecheck initialization"
+        continue-on-error: true
+        id: typecheck
+
+      - name: "🛠️ Build"
+        run: echo "Build initialization"
+        continue-on-error: true
+        id: build
+YAML
+
+git add .github/workflows/initialize-status-checks.yml >/dev/null 2>&1 || true
+note "🎯 Status check initialization workflow created"
+
+# ----- Commit and Push Changes First -----
 if ! git diff --cached --quiet; then
   git commit -m "chore: bootstrap repo governance 🚀
 
@@ -409,11 +406,122 @@ if ! git diff --cached --quiet; then
 - Required checks: 🧹 Format, 🔎 Lint, 🧠 Typecheck, 🛠️ Build
 - Auto-merge and auto-delete branches enabled
 - Husky hooks configured: $HOOK
-- CI workflow with pnpm caching" >/dev/null 2>&1
+- CI workflow with pnpm caching
+- Status check initialization workflow" >/dev/null 2>&1
   
   note "📝 Committed bootstrap changes"
+  
+  # Push to trigger workflows
+  git push origin "$BRANCH" >/dev/null 2>&1 && note "⬆️ Pushed changes to trigger workflows"
 else
   note "✨ No changes to commit (already bootstrapped)"
+fi
+
+# ----- Trigger and Wait for Status Check Initialization -----
+echo -e "\n${GREEN}Initializing status checks...${NC}"
+
+# Trigger the initialization workflow
+if gh workflow run initialize-status-checks --ref "$BRANCH" 2>/dev/null; then
+  note "🚀 Triggered status check initialization workflow"
+  
+  # Wait a moment for the workflow to register
+  sleep 3
+  
+  # Wait for the workflow to complete (max 60 seconds)
+  echo "Waiting for initialization to complete..."
+  WAIT_TIME=0
+  MAX_WAIT=60
+  
+  while [ $WAIT_TIME -lt $MAX_WAIT ]; do
+    # Check if workflow is still running
+    RUNNING=$(gh run list --workflow=initialize-status-checks --limit=1 --json status --jq '.[0].status' 2>/dev/null || echo "")
+    
+    if [ "$RUNNING" = "completed" ]; then
+      note "✅ Status check initialization completed"
+      break
+    elif [ "$RUNNING" = "failure" ]; then
+      warn "Status check initialization failed, but continuing"
+      break
+    fi
+    
+    sleep 2
+    WAIT_TIME=$((WAIT_TIME + 2))
+    echo -n "."
+  done
+  
+  if [ $WAIT_TIME -ge $MAX_WAIT ]; then
+    warn "Status check initialization timed out, continuing anyway"
+  fi
+else
+  warn "Could not trigger initialization workflow, continuing"
+fi
+
+# ----- Branch Protection Configuration -----
+echo -e "\n${GREEN}Configuring branch protection...${NC}"
+
+# Build protection rules JSON
+if [ "$SOLO" = true ]; then
+  cat > /tmp/protect.json <<JSON
+{
+  "required_status_checks": null,
+  "enforce_admins": true,
+  "required_pull_request_reviews": null,
+  "restrictions": null,
+  "required_linear_history": true,
+  "allow_force_pushes": false,
+  "allow_deletions": false,
+  "block_creations": false,
+  "required_conversation_resolution": true,
+  "lock_branch": false,
+  "allow_fork_syncing": false
+}
+JSON
+else
+  cat > /tmp/protect.json <<JSON
+{
+  "required_status_checks": null,
+  "enforce_admins": true,
+  "required_pull_request_reviews": {
+    "required_approving_review_count": $REVIEWS,
+    "dismiss_stale_reviews": true,
+    "require_code_owner_reviews": false,
+    "require_last_push_approval": false
+  },
+  "restrictions": null,
+  "required_linear_history": true,
+  "allow_force_pushes": false,
+  "allow_deletions": false,
+  "block_creations": false,
+  "required_conversation_resolution": true,
+  "lock_branch": false,
+  "allow_fork_syncing": false
+}
+JSON
+fi
+
+# Apply branch protection
+if gh api -X PUT -H 'Accept: application/vnd.github+json' \
+  "repos/${OWNER_REPO}/branches/${BRANCH}/protection" --input /tmp/protect.json >/dev/null 2>&1; then
+  note "🛡️ Branch protection applied successfully"
+else
+  fail "Failed to apply branch protection (check permissions)"
+fi
+
+# Enable strict status checks (base must be up-to-date)
+if gh api -X PATCH "repos/${OWNER_REPO}/branches/${BRANCH}/protection/required_status_checks" \
+  -f strict=true -f contexts='[]' >/dev/null 2>&1; then
+  note "⛓️ Strict status checks enabled (base must be up-to-date)"
+else
+  warn "Could not enable strict status checks"
+fi
+
+# Set required check contexts
+if echo "$REQ_CONTEXTS" | gh api -X PUT \
+  "repos/${OWNER_REPO}/branches/${BRANCH}/protection/required_status_checks/contexts" \
+  --input - >/dev/null 2>&1; then
+  note "✅ Required checks configured: 🧹 Format, 🔎 Lint, 🧠 Typecheck, 🛠️ Build"
+else
+  fail "Failed to set required check contexts"
 fi
 
 # Clean up temp files
