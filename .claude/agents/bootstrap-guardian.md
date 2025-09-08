@@ -1,6 +1,6 @@
 ---
 name: bootstrap-guardian
-description: Idempotent repository bootstrap optimized for SOLO developers by default. Applies branch protection with STRICT required checks (zero required reviewers by default), enables repo auto-merge & automatic branch deletion, installs modern Husky hooks (v9+ compatible), and writes a pnpm-cached CI with emoji job names that map 1:1 to required check contexts. Prints an INFO/WARN/ERR report; exits non-zero on errors.
+description: Idempotent repository bootstrap optimized for SOLO developers by default. Auto-creates GitHub repo if missing, applies branch protection with STRICT required checks (zero required reviewers by default), enables repo auto-merge & automatic branch deletion, installs modern Husky hooks (v9+ compatible), and writes a pnpm-cached CI with emoji job names, smart deployment detection (Pages/GHCR/Release), and GitHub releases. Creates initialization PR to establish status checks. Prints an INFO/WARN/ERR report; exits non-zero on errors.
 model: sonnet
 ---
 
@@ -268,21 +268,61 @@ HOOK_SCRIPT
   fi
 fi
 
-# ----- CI Workflow -----
-echo -e "\n${GREEN}Creating CI workflow...${NC}"
+# ----- CI Workflow with Smart Deployment -----
+echo -e "\n${GREEN}Creating CI workflow with deployment...${NC}"
+
+# Detect project type for deployment strategy
+PROJECT_TYPE="unknown"
+DEPLOY_TARGET="none"
+
+if [ -f "Dockerfile" ] || [ -f "docker-compose.yml" ]; then
+  PROJECT_TYPE="docker"
+  DEPLOY_TARGET="ghcr"
+elif [ -f "package.json" ]; then
+  if grep -q '"next"' package.json 2>/dev/null; then
+    PROJECT_TYPE="nextjs"
+    DEPLOY_TARGET="pages"
+  elif grep -q '"react"' package.json 2>/dev/null || grep -q '"vite"' package.json 2>/dev/null; then
+    PROJECT_TYPE="react"
+    DEPLOY_TARGET="pages"
+  elif grep -q '"vue"' package.json 2>/dev/null; then
+    PROJECT_TYPE="vue"
+    DEPLOY_TARGET="pages"
+  elif grep -q '"@angular"' package.json 2>/dev/null; then
+    PROJECT_TYPE="angular"
+    DEPLOY_TARGET="pages"
+  else
+    PROJECT_TYPE="node"
+    DEPLOY_TARGET="release"
+  fi
+elif [ -f "requirements.txt" ] || [ -f "setup.py" ] || [ -f "pyproject.toml" ]; then
+  PROJECT_TYPE="python"
+  DEPLOY_TARGET="release"
+elif [ -f "Cargo.toml" ]; then
+  PROJECT_TYPE="rust"
+  DEPLOY_TARGET="release"
+elif [ -f "go.mod" ]; then
+  PROJECT_TYPE="go"
+  DEPLOY_TARGET="release"
+else
+  PROJECT_TYPE="generic"
+  DEPLOY_TARGET="release"
+fi
+
+note "🔍 Detected project type: $PROJECT_TYPE (deployment: $DEPLOY_TARGET)"
 
 mkdir -p .github/workflows
-cat > .github/workflows/ci.yml <<'YAML'
+cat > .github/workflows/ci.yml <<YAML
 name: CI
 on:
   push:
-    branches: ['**']
+    branches: [main]
   pull_request:
     types: [opened, synchronize, reopened]
 
 # Cancel in-progress runs for the same branch
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: \${{ github.workflow }}-\${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -332,6 +372,9 @@ jobs:
     name: "🛠️ Build"
     runs-on: ubuntu-latest
     needs: [format, lint, typecheck]
+    outputs:
+      project-type: $PROJECT_TYPE
+      deploy-target: $DEPLOY_TARGET
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -351,25 +394,167 @@ jobs:
             dist/
             build/
             .next/
+            out/
           retention-days: 7
           if-no-files-found: ignore
 YAML
 
+# Add deployment job based on project type
+if [ "$DEPLOY_TARGET" = "pages" ]; then
+  cat >> .github/workflows/ci.yml <<'YAML'
+
+  deploy:
+    name: "🚀 Deploy"
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
+      - name: Upload to Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./dist
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+      - name: Create Release
+        if: success()
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ github.run_number }}
+          name: Release v${{ github.run_number }}
+          body: |
+            ## 🚀 Deployment v${{ github.run_number }}
+            
+            - **Deployed to**: GitHub Pages
+            - **Commit**: ${{ github.sha }}
+            - **Build**: ${{ github.run_id }}
+            
+            [View Deployment](https://pages.github.com/${{ github.repository }})
+          draft: false
+          prerelease: false
+YAML
+elif [ "$DEPLOY_TARGET" = "ghcr" ]; then
+  cat >> .github/workflows/ci.yml <<'YAML'
+
+  deploy:
+    name: "🚀 Deploy"
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:latest
+            ghcr.io/${{ github.repository }}:${{ github.sha }}
+            ghcr.io/${{ github.repository }}:v${{ github.run_number }}
+      - name: Create Release
+        if: success()
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ github.run_number }}
+          name: Release v${{ github.run_number }}
+          body: |
+            ## 🐳 Container Release v${{ github.run_number }}
+            
+            - **Registry**: ghcr.io
+            - **Image**: `ghcr.io/${{ github.repository }}:v${{ github.run_number }}`
+            - **Commit**: ${{ github.sha }}
+            
+            ### Pull Command
+            ```bash
+            docker pull ghcr.io/${{ github.repository }}:v${{ github.run_number }}
+            ```
+          draft: false
+          prerelease: false
+YAML
+else
+  cat >> .github/workflows/ci.yml <<'YAML'
+
+  deploy:
+    name: "🚀 Deploy"
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output
+      - name: Create deployment package
+        run: |
+          if [ -d "dist" ] || [ -d "build" ] || [ -d "out" ]; then
+            zip -r deployment.zip dist/ build/ out/ 2>/dev/null || true
+          else
+            zip -r deployment.zip . -x ".git/*" ".github/*" "node_modules/*" "*.zip"
+          fi
+      - name: Create Release
+        if: success()
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ github.run_number }}
+          name: Release v${{ github.run_number }}
+          body: |
+            ## 📦 Release v${{ github.run_number }}
+            
+            - **Type**: Application Package
+            - **Commit**: ${{ github.sha }}
+            - **Build**: ${{ github.run_id }}
+            
+            ### Assets
+            - deployment.zip - Complete application package
+          files: deployment.zip
+          draft: false
+          prerelease: false
+YAML
+fi
+
+cat >> .github/workflows/ci.yml <<'YAML'
+YAML
+
 git add .github/workflows/ci.yml >/dev/null 2>&1 || true
-note "🏗️ CI workflow created with emoji job names"
+note "🏗️ CI workflow created with deployment strategy: $DEPLOY_TARGET"
 
 # Create initialization workflow to establish status checks
 cat > .github/workflows/initialize-status-checks.yml <<'YAML'
 name: initialize-status-checks
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 jobs:
   init-checks:
     runs-on: ubuntu-latest
-    name: "Run initialization checks"
+    name: "Initialize status checks"
     steps:
       - name: Setup minimal
         run: echo "Initializing checks"
@@ -398,62 +583,103 @@ YAML
 git add .github/workflows/initialize-status-checks.yml >/dev/null 2>&1 || true
 note "🎯 Status check initialization workflow created"
 
-# ----- Commit and Push Changes First -----
+# ----- Commit and Create PR for Initialization -----
 if ! git diff --cached --quiet; then
+  # Create a bootstrap branch for the PR
+  BOOTSTRAP_BRANCH="bootstrap/initialize-checks-$(date +%s)"
+  git checkout -b "$BOOTSTRAP_BRANCH" >/dev/null 2>&1
+  note "🌿 Created bootstrap branch: $BOOTSTRAP_BRANCH"
+  
   git commit -m "chore: bootstrap repo governance 🚀
 
 - Branch protection with strict checks (solo mode: $REVIEWS reviews)
 - Required checks: 🧹 Format, 🔎 Lint, 🧠 Typecheck, 🛠️ Build
 - Auto-merge and auto-delete branches enabled
 - Husky hooks configured: $HOOK
-- CI workflow with pnpm caching
-- Status check initialization workflow" >/dev/null 2>&1
+- CI workflow with PR-only triggers and deployment ($DEPLOY_TARGET)
+- GitHub releases for automated deployments
+- Status check initialization workflow (manual trigger)" >/dev/null 2>&1
   
   note "📝 Committed bootstrap changes"
   
-  # Push to trigger workflows
-  git push origin "$BRANCH" >/dev/null 2>&1 && note "⬆️ Pushed changes to trigger workflows"
-else
-  note "✨ No changes to commit (already bootstrapped)"
-fi
+  # Push the bootstrap branch
+  git push -u origin "$BOOTSTRAP_BRANCH" >/dev/null 2>&1 && note "⬆️ Pushed bootstrap branch"
+  
+  # Create PR for initialization
+  PR_URL=$(gh pr create \
+    --title "chore: initialize repository governance and status checks" \
+    --body "## 🚀 Bootstrap Initialization
 
-# ----- Trigger and Wait for Status Check Initialization -----
-echo -e "\n${GREEN}Initializing status checks...${NC}"
+This PR sets up repository governance with modern CI/CD and deployment automation.
 
-# Trigger the initialization workflow
-if gh workflow run initialize-status-checks --ref "$BRANCH" 2>/dev/null; then
-  note "🚀 Triggered status check initialization workflow"
+### Changes
+- 🏗️ CI workflow with:
+  - Emoji-named jobs (🧹 Format, 🔎 Lint, 🧠 Typecheck, 🛠️ Build)
+  - PR-only triggers (no feature branch noise)
+  - Smart deployment detection: **$DEPLOY_TARGET** strategy
+  - GitHub releases for automated deployments
+- 🎯 Status check initialization workflow (manual trigger only)
+- 🪝 Husky hooks for pre-commit and pre-push ($HOOK)
+- 🤖 Repository settings for auto-merge and auto-delete branches
+
+### Deployment Strategy
+**Detected**: $PROJECT_TYPE project → **$DEPLOY_TARGET** deployment
+
+### Process
+1. This PR establishes all required status checks
+2. CI runs on PR and main branch only
+3. Deployments trigger automatically on main merges
+4. Branch protection configured post-merge
+
+*Generated by bootstrap-guardian*" \
+    --base "$BRANCH" \
+    --head "$BOOTSTRAP_BRANCH" 2>&1 | grep -o 'https://github.com/[^ ]*' | head -1)
   
-  # Wait a moment for the workflow to register
-  sleep 3
-  
-  # Wait for the workflow to complete (max 60 seconds)
-  echo "Waiting for initialization to complete..."
-  WAIT_TIME=0
-  MAX_WAIT=60
-  
-  while [ $WAIT_TIME -lt $MAX_WAIT ]; do
-    # Check if workflow is still running
-    RUNNING=$(gh run list --workflow=initialize-status-checks --limit=1 --json status --jq '.[0].status' 2>/dev/null || echo "")
+  if [ -n "$PR_URL" ]; then
+    note "🎫 Created PR: $PR_URL"
     
-    if [ "$RUNNING" = "completed" ]; then
-      note "✅ Status check initialization completed"
-      break
-    elif [ "$RUNNING" = "failure" ]; then
-      warn "Status check initialization failed, but continuing"
-      break
+    # Enable auto-merge for the bootstrap PR
+    PR_NUMBER=$(echo "$PR_URL" | sed 's/.*\/pull\///')
+    if gh pr merge "$PR_NUMBER" --auto --squash >/dev/null 2>&1; then
+      note "🤖 Auto-merge enabled for bootstrap PR"
+    else
+      warn "Could not enable auto-merge for bootstrap PR (will need manual merge)"
     fi
     
-    sleep 2
-    WAIT_TIME=$((WAIT_TIME + 2))
-    echo -n "."
-  done
-  
-  if [ $WAIT_TIME -ge $MAX_WAIT ]; then
-    warn "Status check initialization timed out, continuing anyway"
+    # Wait for PR to be merged (max 2 minutes)
+    echo "Waiting for bootstrap PR to be merged..."
+    WAIT_TIME=0
+    MAX_WAIT=120
+    
+    while [ $WAIT_TIME -lt $MAX_WAIT ]; do
+      PR_STATE=$(gh pr view "$PR_NUMBER" --json state --jq '.state' 2>/dev/null || echo "")
+      
+      if [ "$PR_STATE" = "MERGED" ]; then
+        note "✅ Bootstrap PR merged successfully"
+        
+        # Switch back to main and pull changes
+        git checkout "$BRANCH" >/dev/null 2>&1
+        git pull origin "$BRANCH" >/dev/null 2>&1
+        note "📥 Pulled merged changes to $BRANCH"
+        break
+      elif [ "$PR_STATE" = "CLOSED" ]; then
+        fail "Bootstrap PR was closed without merging"
+        break
+      fi
+      
+      sleep 3
+      WAIT_TIME=$((WAIT_TIME + 3))
+      echo -n "."
+    done
+    
+    if [ $WAIT_TIME -ge $MAX_WAIT ]; then
+      warn "Bootstrap PR merge timed out - please merge manually: $PR_URL"
+    fi
+  else
+    fail "Failed to create bootstrap PR"
   fi
 else
-  warn "Could not trigger initialization workflow, continuing"
+  note "✨ No changes to commit (already bootstrapped)"
 fi
 
 # ----- Branch Protection Configuration -----
@@ -538,9 +764,14 @@ trap report EXIT
 - Clear error messages with actionable next steps
 
 ## Success Indicators
-- Branch protection applied with strict checks
+- GitHub repository created if missing (auto-detects and creates)
+- Branch protection applied with strict checks via PR workflow
 - Required status checks match CI job names exactly
 - Auto-merge and auto-delete enabled
 - Husky hooks installed and executable
-- CI workflow created with proper caching
+- CI workflow created with:
+  - PR-only triggers (no feature branch pushes)
+  - Smart deployment detection (Pages/GHCR/Release)
+  - GitHub releases for deployments
+- Status check initialization via manual workflow
 - Clean git history with conventional commits

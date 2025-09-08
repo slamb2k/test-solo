@@ -1,7 +1,7 @@
 name: CI
 on:
   push:
-    branches: ['**']
+    branches: [main]
   pull_request:
     types: [opened, synchronize, reopened]
 
@@ -19,7 +19,7 @@ jobs:
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v5
         with:
-          node-version: 22
+          node-version: 20
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: "Check formatting ✨"
@@ -33,7 +33,7 @@ jobs:
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v5
         with:
-          node-version: 22
+          node-version: 20
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: "Run linting 🧪"
@@ -47,7 +47,7 @@ jobs:
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v5
         with:
-          node-version: 22
+          node-version: 20
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: "Type checking 🧩"
@@ -57,12 +57,15 @@ jobs:
     name: "🛠️ Build"
     runs-on: ubuntu-latest
     needs: [format, lint, typecheck]
+    outputs:
+      project-type: react
+      deploy-target: pages
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v5
         with:
-          node-version: 22
+          node-version: 20
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: "Building project 🏗️"
@@ -76,5 +79,50 @@ jobs:
             dist/
             build/
             .next/
+            out/
           retention-days: 7
           if-no-files-found: ignore
+
+  deploy:
+    name: "🚀 Deploy"
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
+      - name: Upload to Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./dist
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+      - name: Create Release
+        if: success()
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ github.run_number }}
+          name: Release v${{ github.run_number }}
+          body: |
+            ## 🚀 Deployment v${{ github.run_number }}
+            
+            - **Deployed to**: GitHub Pages
+            - **Commit**: ${{ github.sha }}
+            - **Build**: ${{ github.run_id }}
+            
+            [View Deployment](https://pages.github.com/${{ github.repository }})
+          draft: false
+          prerelease: false

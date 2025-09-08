@@ -9,12 +9,12 @@ else
   echo "🧹 Running format & lint checks..."
   
   # Try format:check first, fallback to format
-  if pnpm run format:check --if-present 2>/dev/null; then
+  if npm run format:check --if-present 2>/dev/null; then
     :
   else
-    pnpm run format --if-present 2>/dev/null || true
+    npm run format --if-present 2>/dev/null || true
   fi
   
   # Run lint if present
-  pnpm run lint --if-present 2>/dev/null || true
+  npm run lint --if-present 2>/dev/null || true
 fi
