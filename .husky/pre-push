@@ -16,8 +16,8 @@ if [ -f "nx.json" ] && (command -v nx >/dev/null 2>&1 || npx nx --version >/dev/
 else
   echo "📦 Running standard checks..."
   
-  # Use npm instead of pnpm since package.json shows npm structure
-  npm run typecheck --if-present >/dev/null 2>&1 || true
-  npm run test --if-present >/dev/null 2>&1 || true  
-  npm run build --if-present >/dev/null 2>&1 || true
+  # Run standard pnpm scripts if present
+  pnpm run typecheck --if-present >/dev/null 2>&1 || true
+  pnpm run test --if-present >/dev/null 2>&1 || true  
+  pnpm run build --if-present >/dev/null 2>&1 || true
 fi

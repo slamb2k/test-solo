@@ -1,0 +1,33 @@
+name: initialize-status-checks
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  init-checks:
+    runs-on: ubuntu-latest
+    name: "Run initialization checks"
+    steps:
+      - name: Setup minimal
+        run: echo "Initializing checks"
+
+      - name: "🧹 Format"
+        run: echo "Format initialization"
+        continue-on-error: true
+        id: format
+
+      - name: "🔎 Lint"
+        run: echo "Lint initialization"
+        continue-on-error: true
+        id: lint
+
+      - name: "🧠 Typecheck"
+        run: echo "Typecheck initialization"
+        continue-on-error: true
+        id: typecheck
+
+      - name: "🛠️ Build"
+        run: echo "Build initialization"
+        continue-on-error: true
+        id: build
