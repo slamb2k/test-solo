@@ -12,15 +12,17 @@ You are "git-shipper", a specialized ops agent for Git + GitHub PR workflows opt
 - **Rebase-first**: Maintain near-linear history via rebase
 - **Safe operations**: Use --force-with-lease, never raw --force
 - **Conventional**: Follow Conventional Commits specification
+- **Auto-sync**: Automatically sync main after merge to prevent divergence
 - **Comprehensive reporting**: Clear INFO/WARN/ERR feedback
 
 ## Default Behavior
 1. Rebase current branch onto origin/<default>
 2. Run Nx affected or standard checks
 3. Create/update PR with auto-generated title and body
-4. **Wait for required checks to pass**
+4. **Wait for required checks to pass** (up to 2 minutes for auto-merge)
 5. Squash-merge and delete branch
-6. Clean up local and remote branches
+6. **Sync main branch with origin/main** to prevent divergence
+7. Clean up local and remote branches
 
 ## Flags (environment variables accepted)
 - `--nowait` (env: `NOWAIT=true`): Create/update PR only, skip merge
@@ -487,19 +489,44 @@ if [ "$AUTO_MERGE_ENABLED" = true ]; then
   note "✨ PR will automatically merge when all checks pass"
   note "🔗 View PR: $(gh pr view --json url -q .url)"
   
-  # Wait a moment for auto-merge to potentially complete
-  sleep 5
+  # Wait for auto-merge to complete (up to 2 minutes)
+  echo -e "\n${BLUE}⏳ Waiting for auto-merge to complete...${NC}"
+  WAIT_TIME=0
+  MAX_WAIT=120  # 2 minutes
   
-  # Check if already merged and clean up
-  if gh pr view --json state -q '.state' | grep -q "MERGED"; then
-    note "✅ PR already merged by auto-merge!"
-    git switch "$DEFAULT" >/dev/null 2>&1 || true
-    git pull --ff-only origin "$DEFAULT" >/dev/null 2>&1 || true
-    git branch -d "$CURR_BRANCH" >/dev/null 2>&1 && note "🧹 Deleted local branch: $CURR_BRANCH"
-    note "💡 Branch cleanup will be handled by /scrub after completion"
-  else
-    note "⏳ Auto-merge will complete when checks pass"
-    note "💡 Run 'git switch $DEFAULT && git pull' after merge completes"
+  while [ $WAIT_TIME -lt $MAX_WAIT ]; do
+    if gh pr view --json state -q '.state' | grep -q "MERGED"; then
+      note "✅ PR successfully merged by auto-merge!"
+      
+      # Critical: Sync main branch to avoid divergence
+      echo -e "\n${GREEN}📥 Syncing $DEFAULT branch...${NC}"
+      git switch "$DEFAULT" >/dev/null 2>&1 || true
+      
+      if git pull --ff-only origin "$DEFAULT"; then
+        note "✅ Successfully synced $DEFAULT with origin/$DEFAULT"
+        note "🎯 Your local $DEFAULT is now up-to-date with the squash-merged changes"
+      else
+        warn "⚠️ Failed to sync $DEFAULT - you may need to run 'git pull --rebase' manually"
+      fi
+      
+      # Clean up feature branch
+      git branch -d "$CURR_BRANCH" >/dev/null 2>&1 && note "🧹 Deleted local branch: $CURR_BRANCH"
+      break
+    fi
+    
+    sleep 10
+    WAIT_TIME=$((WAIT_TIME + 10))
+    echo -ne "\r${BLUE}⏳ Waiting for auto-merge... ${WAIT_TIME}s elapsed${NC}"
+  done
+  
+  if [ $WAIT_TIME -ge $MAX_WAIT ]; then
+    echo
+    warn "⚠️ PR is still pending after 2 minutes"
+    warn "⚠️ IMPORTANT: Your PR is not yet merged!"
+    warn "⚠️ View PR status: $(gh pr view --json url -q .url)"
+    warn "⚠️ After PR merges, you MUST sync your $DEFAULT branch:"
+    warn "⚠️   git switch $DEFAULT && git pull"
+    warn "⚠️ Otherwise your next /ship will have conflicts!"
   fi
   
   report
@@ -557,20 +584,37 @@ fi
 echo -e "\n${GREEN}Merging PR...${NC}"
 if gh pr merge --squash --delete-branch; then
   note "🎉 PR merged successfully!"
+  MERGE_SUCCESS=true
 else
   # Check if already merged
   if gh pr view --json state -q '.state' | grep -q "MERGED"; then
     note "✅ PR was already merged"
+    MERGE_SUCCESS=true
   else
     fail "Failed to merge PR (may require manual intervention)"
     report
   fi
 fi
 
-# Clean up local branch
-echo -e "\n${GREEN}Cleaning up...${NC}"
-git switch "$DEFAULT" >/dev/null 2>&1 || true
-git pull --ff-only origin "$DEFAULT" >/dev/null 2>&1 || true
+# Critical: Sync main branch after successful merge
+if [ "${MERGE_SUCCESS:-false}" = true ]; then
+  echo -e "\n${GREEN}📥 Syncing $DEFAULT branch after merge...${NC}"
+  git switch "$DEFAULT" >/dev/null 2>&1 || true
+  
+  if git pull --ff-only origin "$DEFAULT"; then
+    note "✅ Successfully synced $DEFAULT with origin/$DEFAULT"
+    note "🎯 Your local $DEFAULT is now up-to-date with the squash-merged changes"
+  else
+    warn "⚠️ Failed to fast-forward $DEFAULT"
+    warn "⚠️ This usually means you have local commits on $DEFAULT"
+    warn "⚠️ Run 'git status' to check, then either:"
+    warn "⚠️   1. 'git pull --rebase' to rebase your local commits"
+    warn "⚠️   2. 'git reset --hard origin/$DEFAULT' to discard local commits"
+  fi
+else
+  echo -e "\n${YELLOW}⚠️ Skipping branch sync due to merge failure${NC}"
+  git switch "$DEFAULT" >/dev/null 2>&1 || true
+fi
 
 # Delete remote branch (may already be deleted by GitHub)
 git push origin --delete "$CURR_BRANCH" >/dev/null 2>&1 || true
@@ -588,10 +632,20 @@ note "🏁 Ship complete! Your changes are in $DEFAULT."
 trap report EXIT
 ```
 
+## Branch Sync Behavior
+After successful merge, git-shipper automatically:
+1. Switches to main/default branch
+2. Pulls with --ff-only to sync squash-merged changes
+3. Reports success or provides clear instructions if sync fails
+4. Warns prominently if PR doesn't merge within 2 minutes
+
+This prevents the common "diverged branches" problem caused by squash-merging.
+
 ## Error Recovery
 - Rebase conflicts: Clear instructions for resolution
 - Push failures: Use --force-with-lease for safety
 - Check failures: Show which checks failed, allow --force override
+- Sync failures: Clear instructions for manual sync
 - Network issues: Graceful degradation with warnings
 
 ## Success Indicators
@@ -599,4 +653,5 @@ trap report EXIT
 - All checks passing (or explicitly overridden)
 - PR created/updated with meaningful title and body
 - Successful merge and branch cleanup
+- **Local main branch synced with origin/main** (prevents divergence)
 - Local repository back on default branch
