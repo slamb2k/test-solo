@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nokia 5110 Snake Game</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="game-container">
+        <div id="nokia-phone">
+            <div id="phone-screen">
+                <div id="lcd-screen">
+                    <canvas id="game-canvas"></canvas>
+                    <div id="overlay">
+                        <div id="menu-screen" class="screen active">
+                            <h2>SNAKE</h2>
+                            <p>Press ENTER to Start</p>
+                            <p class="controls">Use Arrow Keys or WASD</p>
+                        </div>
+                        <div id="pause-screen" class="screen">
+                            <h2>PAUSED</h2>
+                            <p>Press SPACE to Resume</p>
+                        </div>
+                        <div id="game-over-screen" class="screen">
+                            <h2>GAME OVER</h2>
+                            <p>Score: <span id="final-score">0</span></p>
+                            <p>High Score: <span id="high-score-display">0</span></p>
+                            <p>Press ENTER to Restart</p>
+                        </div>
+                    </div>
+                    <div id="score-display">
+                        <span>Score: <span id="score">0</span></span>
+                        <span>High: <span id="high-score">0</span></span>
+                    </div>
+                </div>
+            </div>
+            <div id="phone-buttons">
+                <div class="button-row">
+                    <button class="nav-button" data-key="ArrowUp">▲</button>
+                </div>
+                <div class="button-row">
+                    <button class="nav-button" data-key="ArrowLeft">◄</button>
+                    <button class="nav-button center-button" data-key="Enter">●</button>
+                    <button class="nav-button" data-key="ArrowRight">►</button>
+                </div>
+                <div class="button-row">
+                    <button class="nav-button" data-key="ArrowDown">▼</button>
+                </div>
+            </div>
+        </div>
+        <div id="instructions">
+            <h3>Controls</h3>
+            <p><strong>Arrow Keys/WASD:</strong> Move snake</p>
+            <p><strong>Space:</strong> Pause/Resume</p>
+            <p><strong>Enter:</strong> Start/Restart</p>
+            <p><strong>Click buttons:</strong> Mobile controls</p>
+        </div>
+    </div>
+    <script src="game.js"></script>
+</body>
+</html>
