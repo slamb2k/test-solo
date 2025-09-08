@@ -3,8 +3,8 @@
 
 echo "🚀 Running pre-push checks..."
 
-# Detect Nx for affected optimization - check if workspace exists
-if [ -f "nx.json" ] && (command -v nx >/dev/null 2>&1 || npx nx --version >/dev/null 2>&1); then
+# Detect Nx for affected optimization
+if command -v nx >/dev/null 2>&1 || npx nx --version >/dev/null 2>&1; then
   echo "🎯 Using Nx affected for fast checks..."
   
   # Calculate base for affected
@@ -16,8 +16,8 @@ if [ -f "nx.json" ] && (command -v nx >/dev/null 2>&1 || npx nx --version >/dev/
 else
   echo "📦 Running standard checks..."
   
-  # Run standard pnpm scripts if present
-  pnpm run typecheck --if-present >/dev/null 2>&1 || true
-  pnpm run test --if-present >/dev/null 2>&1 || true  
-  pnpm run build --if-present >/dev/null 2>&1 || true
+  # Run standard npm scripts if present
+  npm run typecheck --if-present 2>/dev/null || true
+  npm run test --if-present 2>/dev/null || true
+  npm run build --if-present 2>/dev/null || true
 fi
