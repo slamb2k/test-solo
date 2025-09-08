@@ -3,8 +3,8 @@
 
 echo "🚀 Running pre-push checks..."
 
-# Detect Nx for affected optimization
-if command -v nx >/dev/null 2>&1 || npx nx --version >/dev/null 2>&1; then
+# Check if this is actually an Nx workspace (has nx.json and node_modules/.bin/nx)
+if [ -f "nx.json" ] && [ -x "node_modules/.bin/nx" ]; then
   echo "🎯 Using Nx affected for fast checks..."
   
   # Calculate base for affected
