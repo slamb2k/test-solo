@@ -1,0 +1,21 @@
+{
+  "name": "test-solo",
+  "version": "1.0.0",
+  "description": "HTML-based Snake game inspired by Nokia 5110 classic",
+  "main": "index.html",
+  "scripts": {
+    "prepare": "husky"
+  },
+  "keywords": [
+    "snake",
+    "game",
+    "nokia",
+    "html5"
+  ],
+  "author": "slamb2k",
+  "license": "MIT",
+  "devDependencies": {
+    "husky": "^9.1.7"
+  },
+  "packageManager": "pnpm@9.0.0"
+}

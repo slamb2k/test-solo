@@ -1,0 +1,20 @@
+#!/usr/bin/env sh
+# Husky pre-commit hook (v9+ style)
+
+# Try lint-staged first, fallback to standard scripts
+if command -v lint-staged >/dev/null 2>&1; then
+  echo "🚀 Running lint-staged..."
+  lint-staged
+else
+  echo "🧹 Running format & lint checks..."
+  
+  # Try format:check first, fallback to format
+  if npm run format:check --if-present 2>/dev/null; then
+    :
+  else
+    npm run format --if-present 2>/dev/null || true
+  fi
+  
+  # Run lint if present
+  npm run lint --if-present 2>/dev/null || true
+fi
